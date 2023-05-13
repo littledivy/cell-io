@@ -1,0 +1,25 @@
+[package]
+name = "systems"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "lib.rs"
+crate-type = ["rlib", "dylib"]
+
+[dependencies]
+bevy = "0.10.1"
+bevy_rapier2d = "0.21.0"
+fastwebsockets = { version = "0.4.2", features = ["upgrade"] }
+deku = "0.16"
+tokio = { version = "1.25.0", features = ["full", "macros"] }
+hyper = { version = "0.14.26", features = ["http1", "server", "client", "tcp"] }
+crossbeam-channel = "*"
+
+common = { path = "../common" }
+
+[features]
+default = []
+dynamic = [
+  "bevy/dynamic_linking"
+]

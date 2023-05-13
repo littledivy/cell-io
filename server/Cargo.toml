@@ -1,0 +1,17 @@
+[package]
+name = "cell-io"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+path = "main.rs"
+name = "server"
+
+[dependencies]
+fastwebsockets = { version = "0.4.2", features = ["upgrade"] }
+hyper = { version = "0.14.26", features = ["http1", "server", "client", "tcp"] }
+tokio = { version = "1.25.0", features = ["full", "macros"] }
+
+common = { path = "../common" }
+deku = "0.16"
+rand = "*"

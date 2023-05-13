@@ -1,0 +1,18 @@
+[package]
+name = "game"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.10.1"
+systems = { path = "./systems" }
+common = { path = "./common" }
+hot-lib-reloader = { version = "*", optional = true }
+bevy_rapier2d = "0.21.0"
+
+[features]
+default = []
+reload = [
+  "hot-lib-reloader",
+  "bevy/dynamic_linking"
+]
