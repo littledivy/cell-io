@@ -1,5 +1,7 @@
 use common::Message;
 use crossbeam_channel::Sender;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use deku::prelude::*;
 use deku::DekuContainerRead;
 use fastwebsockets::{Frame, OpCode, WebSocket};
 use hyper::header::CONNECTION;
@@ -46,18 +48,30 @@ async fn ws_connect() -> Result<WebSocket<Upgraded>> {
     Ok(ws)
 }
 
-pub async fn connect(tx: Sender<Message>) -> Result<()> {
+pub async fn connect(tx: Sender<Message>, mut player_rx: UnboundedReceiver<Message>) -> Result<()> {
     let mut ws = ws_connect().await?;
 
+    // Send spawn message.
+    let msg = Message::NewPlayer(0.0, 0.0);
+    let frame = Frame::new(true, OpCode::Binary, None, msg.to_bytes().unwrap().into());
+    ws.write_frame(frame).await?;
+
     loop {
-        let frame = ws.read_frame().await?;
-        match frame.opcode {
-            OpCode::Binary => {
-                // ...
-                let msg = common::Message::try_from(frame.payload.as_ref())?;
-                tx.send(msg)?;
+        tokio::select! {
+            frame = ws.read_frame() => {
+                let frame = frame?;
+                match frame.opcode {
+                  OpCode::Binary => {
+                    let msg = Message::try_from(frame.payload.as_ref())?;
+                    tx.send(msg)?;
+                  },
+                  _ => {},
+                }            
             }
-            _ => {}
+            Some(msg) = player_rx.recv() => {
+                let frame = Frame::new(true, OpCode::Binary, None, msg.to_bytes().unwrap().into());
+                ws.write_frame(frame).await?;
+            }
         }
     }
 }

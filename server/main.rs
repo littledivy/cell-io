@@ -14,6 +14,7 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::rc::Rc;
 use tokio::net::TcpListener;
+use tokio::sync::broadcast::{self, channel};
 
 #[derive(Clone)]
 struct SpawnExecutor;
@@ -46,20 +47,24 @@ struct Player {
     x: f32,
     y: f32,
     radius: f32,
-    conn: WebSocket<Upgraded>,
+    conn: (),
 }
 
 struct Game {
     food: Vec<(f32, f32)>,
     cells: Vec<Player>,
+    incoming: broadcast::Sender<Message>,
+    broadcast: broadcast::Sender<Message>,
 }
 
-impl Default for Game {
-    fn default() -> Self {
+impl Game {
+    fn new(incoming: broadcast::Sender<Message>, broadcast: broadcast::Sender<Message>) -> Self {
         let food = (0..100).map(|_| gen_food()).collect();
         Self {
             food,
             cells: Vec::new(),
+            incoming,
+            broadcast,
         }
     }
 }
@@ -70,6 +75,8 @@ async fn handle_client(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut ws = fut.await?;
 
+    let tx = game.borrow().incoming.clone();
+    let mut outgoing = game.borrow().broadcast.subscribe();
     let frames = game
         .borrow()
         .food
@@ -88,8 +95,27 @@ async fn handle_client(
         x: 0.0,
         y: 0.0,
         radius: 10.0,
-        conn: ws,
+        conn: (),
     });
+
+    loop {
+        tokio::select! {
+            frame = ws.read_frame() => {
+              let frame = frame?;
+              match frame.opcode {
+                OpCode::Binary => {
+                let msg = common::Message::try_from(frame.payload.as_ref())?;
+                tx.send(msg)?;
+            },
+            _ => {},
+              }            }
+            msg = outgoing.recv() => {
+                let msg = msg?;
+                let frame = Frame::new(true, OpCode::Binary, None, msg_to_frame(msg).into());
+                ws.write_frame(frame).await?;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -109,12 +135,47 @@ async fn server_upgrade(
     Ok(response)
 }
 
+async fn game_loop(
+    game: Rc<RefCell<Game>>,
+    mut incoming_rx: broadcast::Receiver<Message>,
+    mut outgoing_tx: broadcast::Sender<Message>,
+) {
+    // Players send its events, here we actually handle them.
+    loop {
+        let msg = incoming_rx.recv().await.unwrap();
+        match msg {
+            Message::NewPlayer(x, y) => {
+                // Broadcast new player to all players.
+                let msg = Message::NewPlayer(x, y);
+                outgoing_tx.send(msg).unwrap();
+            }
+            Message::MovePlayer(x, y) => {
+                // Broadcast move player to all players.
+                let msg = Message::MovePlayer(x, y);
+                outgoing_tx.send(msg).unwrap();
+            }
+            _ => {}
+        }
+    }
+}
+
+const BROADCAST_BUFFER_SIZE: usize = 128;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     println!("Server started, listening on {}", "127.0.0.1:8080");
-    let game = Rc::new(RefCell::new(Game::default()));
+
+    // Initialize the game state.
+    let (incoming_tx, incoming_rx) = channel(BROADCAST_BUFFER_SIZE);
+    let (outgoing_tx, _) = channel(BROADCAST_BUFFER_SIZE);
+    let game = Rc::new(RefCell::new(Game::new(incoming_tx, outgoing_tx.clone())));
+
     let localset = tokio::task::LocalSet::new();
+
+    localset.spawn_local(game_loop(game.clone(), incoming_rx, outgoing_tx));
+
+    // Spawn a task that will listen for incoming connections.
     localset
         .run_until(async move {
             loop {
