@@ -1,6 +1,5 @@
 use common::Message;
 use crossbeam_channel::Sender;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use deku::prelude::*;
 use deku::DekuContainerRead;
 use fastwebsockets::{Frame, OpCode, WebSocket};
@@ -11,6 +10,7 @@ use hyper::Body;
 use hyper::Request;
 use std::future::Future;
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 const SERVER_ADDR: &str = "localhost:8080";
 
@@ -51,11 +51,6 @@ async fn ws_connect() -> Result<WebSocket<Upgraded>> {
 pub async fn connect(tx: Sender<Message>, mut player_rx: UnboundedReceiver<Message>) -> Result<()> {
     let mut ws = ws_connect().await?;
 
-    // Send spawn message.
-    let msg = Message::NewPlayer(0.0, 0.0);
-    let frame = Frame::new(true, OpCode::Binary, None, msg.to_bytes().unwrap().into());
-    ws.write_frame(frame).await?;
-
     loop {
         tokio::select! {
             frame = ws.read_frame() => {
@@ -66,7 +61,7 @@ pub async fn connect(tx: Sender<Message>, mut player_rx: UnboundedReceiver<Messa
                     tx.send(msg)?;
                   },
                   _ => {},
-                }            
+                }
             }
             Some(msg) = player_rx.recv() => {
                 let frame = Frame::new(true, OpCode::Binary, None, msg.to_bytes().unwrap().into());

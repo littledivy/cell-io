@@ -34,6 +34,7 @@ fn main() {
         .add_system(read_events)
         .add_system(spawn_food)
         .add_system(player_movement)
+        .add_system(enemy_movement)
         .add_system(player_movement_mouse)
         .add_plugin(RapierPhysicsPlugin::<NoUserData>::pixels_per_meter(100.0))
         .run();

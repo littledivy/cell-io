@@ -19,7 +19,18 @@ impl ServerEvents {
     }
 }
 
-fn connect() -> (ServerEvents, UnboundedSender<Message>) {
+#[derive(Resource, Deref)]
+pub struct PlayerTx {
+    tx: UnboundedSender<Message>,
+}
+
+impl PlayerTx {
+    pub fn new(tx: UnboundedSender<Message>) -> Self {
+        Self { tx }
+    }
+}
+
+fn connect() -> (ServerEvents, PlayerTx) {
     let (tx, rx) = bounded(100);
     let (player_tx, player_rx) = mpsc::unbounded_channel();
     std::thread::spawn(move || {
@@ -30,21 +41,26 @@ fn connect() -> (ServerEvents, UnboundedSender<Message>) {
                 net::connect(tx, player_rx).await.unwrap();
             });
     });
-    (ServerEvents::new(rx), player_tx)
+    (ServerEvents::new(rx), PlayerTx::new(player_tx))
 }
 
 #[derive(Component)]
 pub struct Player {
     // The float value is the player movement speed in 'pixels/second'.
     pub speed: f32,
-    // Previous vector of the player motion. Used to calculate new
+     // Previous vector of the player motion. Used to calculate new
     // motion when there is change in only one axis, eg: mouse motion.
-    prev_force: Vec2,
-    pub tx: Option<UnboundedSender<Message>>,
+    prev_force: Vec2,  
+    uid: u32,
 }
 
 #[derive(Component)]
-pub struct Enemy(pub Player);
+pub struct Enemy {
+    // The float value is the player movement speed in 'pixels/second'.
+    pub speed: f32,
+
+    uid: u32,
+}
 
 static DEFAULT_SPEED: f32 = 2000.0;
 
@@ -60,6 +76,7 @@ pub fn setup(
 
     let (server_events, player_tx) = connect();
     commands.insert_resource(server_events);
+    commands.insert_resource(player_tx);
     commands.spawn(Camera2dBundle::default());
 
     let mut lines: Vec<(Vec3, Vec3)> = Vec::new();
@@ -78,44 +95,11 @@ pub fn setup(
         ));
     }
 
-    commands
-        .spawn(MaterialMesh2dBundle {
-            mesh: Mesh2dHandle(meshes.add(Mesh::from(LineList { lines }))),
-            material: materials.add(Color::BLACK.into()),
-            ..default()
-        })
-        .with_children(|parent| {
-            let sprite_size = 100.0;
-
-            parent.spawn((
-                MaterialMesh2dBundle {
-                    mesh: Mesh2dHandle(
-                        meshes.add(
-                            shape::Circle {
-                                radius: sprite_size / 2.0,
-                                ..Default::default()
-                            }
-                            .into(),
-                        ),
-                    ),
-                    transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
-                    material: materials.add(Color::GREEN.into()),
-                    ..Default::default()
-                },
-                RigidBody::Dynamic,
-                Velocity::linear(Vec2::new(0.0, 0.0)),
-                ExternalForce {
-                    force: Vec2::new(0.0, 0.0),
-                    torque: 0.0,
-                },
-                Collider::ball(sprite_size / 2.0),
-                Player {
-                    speed: DEFAULT_SPEED,
-                    prev_force: Vec2::ZERO,
-                    tx: Some(player_tx),
-                },
-            ));
-        });
+    commands.spawn(MaterialMesh2dBundle {
+        mesh: Mesh2dHandle(meshes.add(Mesh::from(LineList { lines }))),
+        material: materials.add(Color::BLACK.into()),
+        ..default()
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -147,7 +131,7 @@ pub fn spawn_food(
     mut commands: Commands,
     mut reader: EventReader<Message>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut enemy_info: Query<(&mut Enemy, &mut ExternalForce)>,
+    mut enemy_info: Query<(&mut Enemy, &mut Velocity, &mut ExternalForce)>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     for (per_frame, event) in reader.iter().enumerate() {
@@ -173,7 +157,39 @@ pub fn spawn_food(
                     Collider::ball(10.0),
                 ));
             }
-            Message::NewPlayer(x, y) => {
+            Message::Start(x, y, uid) => {
+                let sprite_size = 100.0;
+
+                commands.spawn((
+                    MaterialMesh2dBundle {
+                        mesh: Mesh2dHandle(
+                            meshes.add(
+                                shape::Circle {
+                                    radius: sprite_size / 2.0,
+                                    ..Default::default()
+                                }
+                                .into(),
+                            ),
+                        ),
+                        transform: Transform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+                        material: materials.add(Color::GREEN.into()),
+                        ..Default::default()
+                    },
+                    RigidBody::Dynamic,
+                    Velocity::linear(Vec2::new(0.0, 0.0)),
+                    ExternalForce {
+                        force: Vec2::new(0.0, 0.0),
+                        torque: 0.0,
+                    },
+                    Collider::ball(sprite_size / 2.0),
+                    Player {
+                        speed: DEFAULT_SPEED,
+                        prev_force: Vec2::ZERO,
+                        uid: *uid,
+                    },
+                ));
+            }
+            Message::NewPlayer(x, y, uid) => {
                 // Spawn a new player at the given position.
                 let sprite_size = 100.0;
 
@@ -199,18 +215,20 @@ pub fn spawn_food(
                         torque: 0.0,
                     },
                     Collider::ball(sprite_size / 2.0),
-                    Enemy(Player {
+                    Enemy {
                         speed: DEFAULT_SPEED,
-                        prev_force: Vec2::ZERO,
-                        tx: None,
-                    }),
+                        uid: *uid,
+                    },
                 ));
             }
-            Message::MovePlayer(force_x, force_y) => {
+            Message::MovePlayer(force_x, force_y, uid) => {
                 // Move the player by applying a force to it.
-                for (mut player, mut force) in enemy_info.iter_mut() {
-                    force.force = Vec2::new(*force_x, *force_y);
-                    player.0.prev_force = force.force;
+                for (mut player, mut vel, mut force) in enemy_info.iter_mut() {
+                    if player.uid == *uid {
+                        let move_delta = Vec2::new(*force_x, *force_y);
+                        force.force = move_delta * player.speed;
+                        vel.linvel = Vec2::ZERO;
+                    }
                 }
             }
         }
@@ -242,10 +260,20 @@ pub fn player_movement(
     }
 }
 
+#[no_mangle]
+pub fn enemy_movement(
+  mut enemy_info: Query<(&Enemy, &mut Velocity)>,
+) {
+     for (enemy, mut rb_vels) in &mut enemy_info {
+        rb_vels.linvel = Vec2::ZERO;
+    }
+}
+
 // Player movement that follows the mouse cursor.
 #[no_mangle]
 pub fn player_movement_mouse(
     mut player_info: Query<(&mut Player, &mut Velocity, &mut ExternalForce)>,
+    mut player_tx: ResMut<PlayerTx>,
     mut mouse_motion_events: EventReader<MouseMotion>,
 ) {
     for (mut player, mut rb_vels, mut force) in &mut player_info {
@@ -265,9 +293,14 @@ pub fn player_movement_mouse(
 
                 force.force = move_delta * player.speed;
                 player.prev_force = move_delta.clone();
-                if let Some(tx) = &player.tx {
-                    tx.send(Message::MovePlayer(force.force.x, force.force.y)).unwrap();
-                }
+                player_tx
+                    .tx
+                    .send(Message::MovePlayer(
+                        move_delta.x,
+                        move_delta.y,
+                        player.uid,
+                    ))
+                    .unwrap();
             }
         }
     }

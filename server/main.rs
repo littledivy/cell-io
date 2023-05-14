@@ -47,7 +47,7 @@ struct Player {
     x: f32,
     y: f32,
     radius: f32,
-    conn: (),
+    uid: u32,
 }
 
 struct Game {
@@ -77,6 +77,8 @@ async fn handle_client(
 
     let tx = game.borrow().incoming.clone();
     let mut outgoing = game.borrow().broadcast.subscribe();
+    
+    // Spawn food.
     let frames = game
         .borrow()
         .food
@@ -91,13 +93,40 @@ async fn handle_client(
         ws.write_frame(frame).await?;
     }
 
-    game.borrow_mut().cells.push(Player {
-        x: 0.0,
-        y: 0.0,
-        radius: 10.0,
-        conn: (),
-    });
+    // Spawn cells.
+    let frames = game
+        .borrow()
+        .cells
+        .iter()
+        .map(|cell| {
+            let msg = Message::NewPlayer(cell.x, cell.y, cell.uid);
+            Frame::new(true, OpCode::Binary, None, msg_to_frame(msg).into())
+        })
+        .collect::<Vec<_>>();
 
+    for frame in frames {
+        ws.write_frame(frame).await?;
+    }
+
+    let uid = {
+      let mut game = game.borrow_mut();
+      let uid = game.cells.len() as u32;
+      game.cells.push(Player {
+          x: 0.0,
+          y: 0.0,
+          radius: 10.0,
+          uid,
+      });
+      uid
+    };
+
+    // Spawn the player.
+    let msg = Message::Start(0.0, 0.0, uid);
+    tx.send(Message::NewPlayer(0.0, 0.0, uid)).unwrap();
+    let frame = Frame::new(true, OpCode::Binary, None, msg_to_frame(msg).into());
+    ws.write_frame(frame).await?;
+    println!("Spawned player with uid {}", uid);
+    
     loop {
         tokio::select! {
             frame = ws.read_frame() => {
@@ -111,6 +140,9 @@ async fn handle_client(
               }            }
             msg = outgoing.recv() => {
                 let msg = msg?;
+                if msg.uid() == Some(uid) {
+                    continue;
+                }
                 let frame = Frame::new(true, OpCode::Binary, None, msg_to_frame(msg).into());
                 ws.write_frame(frame).await?;
             }
@@ -144,14 +176,14 @@ async fn game_loop(
     loop {
         let msg = incoming_rx.recv().await.unwrap();
         match msg {
-            Message::NewPlayer(x, y) => {
+            Message::NewPlayer(x, y, uid) => {
                 // Broadcast new player to all players.
-                let msg = Message::NewPlayer(x, y);
+                let msg = Message::NewPlayer(x, y, uid);
                 outgoing_tx.send(msg).unwrap();
             }
-            Message::MovePlayer(x, y) => {
+            Message::MovePlayer(x, y, uid) => {
                 // Broadcast move player to all players.
-                let msg = Message::MovePlayer(x, y);
+                let msg = Message::MovePlayer(x, y, uid);
                 outgoing_tx.send(msg).unwrap();
             }
             _ => {}
